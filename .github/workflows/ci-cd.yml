@@ -1,0 +1,94 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # 1. Статическая проверка скриптов и конфигурации
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ShellCheck
+        run: shellcheck -s sh -x --severity=warning backup/scripts/*.sh storage/entrypoint.sh scripts/*.sh
+
+      - name: Validate compose files
+        run: |
+          sh scripts/init-secrets.sh
+          docker compose -f docker-compose.yaml config --quiet
+          docker compose -f docker-stack.yaml config --quiet
+
+  # 2. Интеграционный тест: запуск стенда, копирование и проверка восстановления
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    env:
+      BACKUP_ON_START: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate secrets
+        run: sh scripts/init-secrets.sh
+
+      - name: Build and start containers
+        run: docker compose up -d --build --wait
+
+      - name: Run backup
+        run: docker compose exec -T backup backup.sh
+
+      - name: List snapshots
+        run: docker compose exec -T backup restic snapshots
+
+      - name: Verify restore
+        run: docker compose exec -T backup verify-restore.sh
+
+      - name: Check dashboard
+        run: |
+          curl -fsS http://localhost:8080/health
+          curl -fsS http://localhost:8080/status/status.json | tee status.json
+          jq -e '.status == "success"' status.json
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
+
+  # 3. Публикация образов в Docker Hub (только после успешных тестов в ветке main)
+  publish:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [db, storage, backup, dashboard]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/backup-platform-${{ matrix.service }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/backup-platform-${{ matrix.service }}:${{ github.sha }}

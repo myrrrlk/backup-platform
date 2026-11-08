@@ -1,0 +1,115 @@
+# Развёртывание платформы в кластере Docker Swarm:
+#   docker stack deploy -c docker-stack.yaml backup
+version: "3.8"
+
+services:
+  db:
+    image: localhost:5000/backup-platform-db:latest
+    environment:
+      POSTGRES_DB: company
+      POSTGRES_USER: company_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U company_admin -d company"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]   # том с данными находится на узле-менеджере
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits: {cpus: "1.0", memory: 512M}
+
+  storage:
+    image: localhost:5000/backup-platform-storage:latest
+    environment:
+      STORAGE_USER: backup
+    secrets: [storage_password]
+    volumes:
+      - repo:/data
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits: {cpus: "0.5", memory: 256M}
+
+  backup:
+    image: localhost:5000/backup-platform-backup:latest
+    environment:
+      PGHOST: db
+      PGUSER: company_admin
+      PGDATABASE: company
+      STORAGE_HOST: storage
+      STORAGE_USER: backup
+      REPO_NAME: company
+      BACKUP_SCHEDULE: "*/15 * * * *"
+      BACKUP_ON_START: "true"
+      KEEP_LAST: "4"
+      KEEP_DAILY: "7"
+      KEEP_WEEKLY: "4"
+      KEEP_MONTHLY: "6"
+    secrets: [db_password, storage_password, restic_password]
+    volumes:
+      - ./sample-data:/source/files:ro
+      - status:/status
+    networks: [backend]
+    deploy:
+      replicas: 1          # планировщик cron должен работать в единственном экземпляре
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      resources:
+        limits: {cpus: "1.0", memory: 512M}
+
+  dashboard:
+    image: localhost:5000/backup-platform-dashboard:latest
+    ports:
+      - "8080:80"
+    volumes:
+      - status:/status:ro
+    networks: [frontend]
+    deploy:
+      replicas: 2          # две реплики, запросы распределяет routing mesh
+      placement:
+        constraints: [node.role == manager]
+      update_config:
+        parallelism: 1     # обновление реплик по одной, без простоя
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: any
+      resources:
+        limits: {cpus: "0.25", memory: 64M}
+
+networks:
+  backend:
+    driver: overlay
+    internal: true
+  frontend:
+    driver: overlay
+
+volumes:
+  pgdata:
+  repo:
+  status:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  storage_password:
+    file: ./secrets/storage_password.txt
+  restic_password:
+    file: ./secrets/restic_password.txt

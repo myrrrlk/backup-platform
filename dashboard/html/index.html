@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мониторинг резервного копирования</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; background: #f3f5f8; color: #1d2733; }
+  header { background: #1f3b57; color: #fff; padding: 16px 32px; }
+  header h1 { margin: 0; font-size: 22px; }
+  main { padding: 24px 32px; max-width: 1100px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+  .card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .card .label { font-size: 13px; color: #5b6b7c; }
+  .card .value { font-size: 20px; font-weight: bold; margin-top: 6px; }
+  .ok { color: #1a7f37; } .fail { color: #c62828; }
+  table { width: 100%; border-collapse: collapse; margin-top: 24px; background: #fff; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid #e1e6ec; text-align: left; font-size: 14px; }
+  th { background: #e8edf3; }
+  .muted { color: #5b6b7c; font-size: 13px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<header><h1>Платформа резервного копирования: мониторинг</h1></header>
+<main>
+  <div class="cards">
+    <div class="card"><div class="label">Статус последнего копирования</div><div class="value" id="status">—</div></div>
+    <div class="card"><div class="label">Время завершения</div><div class="value" id="finished">—</div></div>
+    <div class="card"><div class="label">Последний снимок</div><div class="value" id="snapshot">—</div></div>
+    <div class="card"><div class="label">Снимков в репозитории</div><div class="value" id="total">—</div></div>
+    <div class="card"><div class="label">Объём репозитория</div><div class="value" id="size">—</div></div>
+    <div class="card"><div class="label">Расписание (cron)</div><div class="value" id="schedule">—</div></div>
+  </div>
+  <h2>История запусков</h2>
+  <table>
+    <thead><tr><th>Завершено</th><th>Статус</th><th>Снимок</th><th>Новые данные</th><th>Длительность</th><th>Сообщение</th></tr></thead>
+    <tbody id="history"><tr><td colspan="6">Нет данных</td></tr></tbody>
+  </table>
+  <p class="muted" id="updated"></p>
+</main>
+<script>
+  function bytes(n) {
+    if (!n) return "0 Б";
+    const u = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+    const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), u.length - 1);
+    return (n / Math.pow(1024, i)).toFixed(1) + " " + u[i];
+  }
+  function statusText(s) {
+    return s === "success" ? '<span class="ok">Успешно</span>' : '<span class="fail">Ошибка</span>';
+  }
+  async function load() {
+    try {
+      const st = await (await fetch("status/status.json", { cache: "no-store" })).json();
+      document.getElementById("status").innerHTML = statusText(st.status);
+      document.getElementById("finished").textContent = st.finished_at;
+      document.getElementById("snapshot").textContent = st.snapshot_id || "—";
+      document.getElementById("total").textContent = st.snapshots_total;
+      document.getElementById("size").textContent = bytes(st.repo_size_bytes);
+      document.getElementById("schedule").textContent = st.schedule;
+
+      const hist = await (await fetch("status/history.json", { cache: "no-store" })).json();
+      document.getElementById("history").innerHTML = hist.map(h =>
+        `<tr><td>${h.finished_at}</td><td>${statusText(h.status)}</td><td>${h.snapshot_id || "—"}</td>` +
+        `<td>${bytes(h.data_added_bytes)}</td><td>${h.duration_sec} с</td><td>${h.message}</td></tr>`).join("");
+    } catch (e) {
+      document.getElementById("status").innerHTML = '<span class="fail">Нет данных</span>';
+    }
+    document.getElementById("updated").textContent = "Обновлено: " + new Date().toLocaleString("ru-RU");
+  }
+  load();
+  setInterval(load, 30000);
+</script>
+</body>
+</html>

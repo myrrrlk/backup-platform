@@ -1,0 +1,88 @@
+# Запуск платформы на одном хосте (разработка, тестирование, CI)
+name: backup-platform
+
+services:
+  db:
+    build: ./db
+    image: ${REGISTRY:-localhost:5000}/backup-platform-db:${TAG:-latest}
+    environment:
+      POSTGRES_DB: company
+      POSTGRES_USER: company_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U company_admin -d company"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  storage:
+    build: ./storage
+    image: ${REGISTRY:-localhost:5000}/backup-platform-storage:${TAG:-latest}
+    environment:
+      STORAGE_USER: backup
+    secrets: [storage_password]
+    volumes:
+      - repo:/data
+    networks: [backend]
+    restart: unless-stopped
+
+  backup:
+    build: ./backup
+    image: ${REGISTRY:-localhost:5000}/backup-platform-backup:${TAG:-latest}
+    environment:
+      PGHOST: db
+      PGUSER: company_admin
+      PGDATABASE: company
+      STORAGE_HOST: storage
+      STORAGE_USER: backup
+      REPO_NAME: company
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-*/15 * * * *}
+      BACKUP_ON_START: ${BACKUP_ON_START:-true}
+      KEEP_LAST: 4
+      KEEP_DAILY: 7
+      KEEP_WEEKLY: 4
+      KEEP_MONTHLY: 6
+    secrets: [db_password, storage_password, restic_password]
+    volumes:
+      - ./sample-data:/source/files:ro
+      - status:/status
+    networks: [backend]
+    depends_on:
+      db:
+        condition: service_healthy
+      storage:
+        condition: service_started
+    restart: unless-stopped
+
+  dashboard:
+    build: ./dashboard
+    image: ${REGISTRY:-localhost:5000}/backup-platform-dashboard:${TAG:-latest}
+    ports:
+      - "8080:80"
+    volumes:
+      - status:/status:ro
+    networks: [frontend]
+    restart: unless-stopped
+
+networks:
+  backend:
+    internal: true     # нет выхода во внешние сети, доступ только между контейнерами
+  frontend: {}
+
+volumes:
+  pgdata:
+  repo:
+  status:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  storage_password:
+    file: ./secrets/storage_password.txt
+  restic_password:
+    file: ./secrets/restic_password.txt
